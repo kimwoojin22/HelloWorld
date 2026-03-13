@@ -1,13 +1,20 @@
 // ===== 설정 =====
+// 모델을 교체할 때는 이 상수만 변경하면 됨
+// OpenRouter 무료 모델 목록: https://openrouter.ai/models?q=free
 const OPENROUTER_MODEL = 'stepfun/step-3.5-flash:free';
 const OPENROUTER_ENDPOINT = 'https://openrouter.ai/api/v1/chat/completions';
 const MAX_TOKENS = 4096;
 
 // ===== 각 탭별 프롬프트 =====
+// summary는 메모 유형(meeting/learning/idea)에 따라 분기되는 객체 구조
+// 나머지 탭은 유형 무관하게 동일한 프롬프트 사용
 const PROMPTS = {
   summary: {
+    // 회의/업무: 결정 사항과 액션 아이템 중심
     meeting: `회의/업무 메모를 간결하게 요약해 주세요.\n\n## 주요 내용\n- bullet point 3~5개\n\n## 결정 사항\n- 없으면 생략\n\n## 다음 할 일\n- 없으면 생략`,
+    // 교육/학습: 개념과 인사이트 중심 — 회의 형식 섹션 사용 금지
     learning: `교육/학습 메모를 간결하게 요약해 주세요. "결정 사항"이나 "다음 할 일" 섹션은 절대 사용하지 마세요.\n\n## 핵심 개념\n- bullet point 3~5개\n\n## 배운 점\n- bullet point 3~5개\n\n## 적용 포인트\n- 없으면 생략`,
+    // 아이디어/기획: 아이디어와 검토사항 중심
     idea: `아이디어/기획 메모를 간결하게 요약해 주세요.\n\n## 핵심 아이디어\n- bullet point 3~5개\n\n## 근거\n- 없으면 생략\n\n## 고려사항\n- bullet point 2~3개`,
   },
 
@@ -32,21 +39,22 @@ const PROMPTS = {
 
 군더더기 없이 실용적으로 작성.`,
 
-  diagram: `메모에서 흐름/관계를 파악해 Mermaid 다이어그램으로 표현해 주세요.
+  diagram: `메모에 명확한 순서/단계/흐름이 있을 때만 Mermaid 다이어그램을 생성하세요.
 
-[한 줄 설명]
+프로세스가 없으면 다음 문구만 출력하세요:
+> 이 메모에는 도식화할 프로세스가 없습니다.
+
+프로세스가 있으면 flowchart TD 로만 작성하세요. 노드는 5개 이하로 간단하게.
 
 \`\`\`mermaid
-[코드]
+flowchart TD
+  A[단계1] --> B[단계2] --> C[단계3]
 \`\`\`
 
-flowchart / sequenceDiagram / classDiagram 중 적합한 것 선택.
-
-Mermaid 노드 작성 규칙 (반드시 준수):
-- 노드 텍스트에 이모지 사용 금지
-- 노드 텍스트 내 줄바꿈 금지
-- 특수문자(괄호, 슬래시 등) 포함 시 반드시 큰따옴표로 감쌀 것: A["텍스트 (설명)"]
-- 텍스트는 짧게 한 줄로`,
+노드 규칙:
+- 텍스트는 짧게 (5단어 이내)
+- 이모지·줄바꿈 금지
+- 특수문자 있으면 큰따옴표로 감쌀 것: A["텍스트 (설명)"]`,
 
   steps: `메모 내용을 단계별 가이드로 작성해 주세요.
 
@@ -117,8 +125,9 @@ function toggleTheme() {
 function loadApiKey() {
   const saved = localStorage.getItem('memodoc_api_key');
   if (saved) {
+    // Gemini → OpenRouter 마이그레이션 안전장치:
+    // 이전에 저장된 AIza... 형식의 Gemini 키가 있으면 자동 삭제 후 재입력 유도
     if (!saved.startsWith('sk-or-')) {
-      // 이전 Gemini 키가 남아있는 경우 자동 삭제
       localStorage.removeItem('memodoc_api_key');
       return;
     }
@@ -173,14 +182,17 @@ function hideError() {
 }
 
 // ===== 스트리밍 API 호출 (OpenRouter) =====
+// OpenAI 호환 SSE(Server-Sent Events) 방식으로 스트리밍 응답을 처리한다.
+// 각 탭은 독립적으로 이 함수를 호출하며, 응답이 오는 대로 화면에 즉시 렌더링한다.
 async function callClaudeStream(tabId, memo) {
+  // summary 탭은 메모 유형별로 다른 프롬프트를 사용, 나머지는 단일 프롬프트
   const raw = PROMPTS[tabId];
   const prompt = (tabId === 'summary' && typeof raw === 'object')
     ? raw[state.memoType] || raw.meeting
     : raw;
   const pane = $(`pane-${tabId}`);
 
-  // 빈 상태 제거 후 출력 영역 초기화
+  // 탭 콘텐츠를 출력 영역으로 초기화 (이전 결과 덮어쓰기)
   pane.innerHTML = `
     <div class="output-header">
       <span class="output-label">${getTabLabel(tabId)}</span>
@@ -191,7 +203,7 @@ async function callClaudeStream(tabId, memo) {
     </div>`;
 
   const outputEl = $(`output-${tabId}`);
-  let fullText = '';
+  let fullText = ''; // 스트리밍으로 수신한 텍스트를 누적
 
   try {
     const res = await fetch(OPENROUTER_ENDPOINT, {
@@ -211,6 +223,7 @@ async function callClaudeStream(tabId, memo) {
       })
     });
 
+    // HTTP 오류 시 응답 본문에서 상세 메시지 추출
     if (!res.ok) {
       const errText = await res.text().catch(() => '');
       let errMsg = `API 오류 (${res.status})`;
@@ -222,30 +235,34 @@ async function callClaudeStream(tabId, memo) {
       throw new Error(errMsg);
     }
 
+    // SSE 스트림을 청크 단위로 읽어 파싱
     const reader = res.body.getReader();
     const decoder = new TextDecoder();
-    let buffer = '';
+    let buffer = ''; // 청크가 줄 경계에서 잘릴 수 있으므로 버퍼에 누적
 
     while (true) {
       const { done, value } = await reader.read();
       if (done) break;
 
+      // 이전 버퍼 + 새 청크를 합쳐 줄 단위로 분리
       buffer += decoder.decode(value, { stream: true });
       const lines = buffer.split('\n');
+      // 마지막 줄은 아직 완성되지 않았을 수 있으므로 버퍼에 남겨둠
       buffer = lines.pop();
 
       for (const line of lines) {
-        if (!line.startsWith('data: ')) continue;
+        if (!line.startsWith('data: ')) continue; // SSE 형식: "data: {json}"
         const data = line.slice(6).trim();
-        if (!data || data === '[DONE]') continue;
+        if (!data || data === '[DONE]') continue;  // 스트림 종료 신호 무시
 
         try {
+          // OpenAI 호환 형식: choices[0].delta.content 에 텍스트 조각이 담김
           const evt = JSON.parse(data);
           const text = evt.choices?.[0]?.delta?.content;
           if (text) {
             fullText += text;
 
-            // 도식화 탭은 Mermaid 렌더링을 위해 별도 처리
+            // 도식화 탭: 스트리밍 중에는 마크다운으로 미리보기, 완료 후 Mermaid 렌더링
             if (tabId === 'diagram') {
               outputEl.innerHTML = '<span class="cursor"></span>';
               renderMarkdown(outputEl, fullText + ' ▌');
@@ -253,25 +270,38 @@ async function callClaudeStream(tabId, memo) {
               outputEl.innerHTML = marked.parse(fullText + ' ▌');
             }
           }
-        } catch {}
+        } catch {} // JSON 파싱 실패 시 해당 청크 무시하고 계속
       }
     }
 
-    // 완료 후 최종 렌더링
+    // 스트리밍 완료 — 커서 제거 후 최종 렌더링
     state.results[tabId] = fullText;
 
     if (tabId === 'diagram') {
       outputEl.innerHTML = '';
-      await renderDiagram(outputEl, fullText);
+      await renderDiagram(outputEl, fullText); // Mermaid SVG 렌더링
     } else {
       outputEl.innerHTML = marked.parse(fullText);
     }
 
   } catch (err) {
-    outputEl.innerHTML = `<div style="color:var(--error);padding:12px;background:var(--error-bg);border-radius:8px;">
-      ❌ <strong>오류 발생:</strong> ${err.message}</div>`;
+    // 오류 발생 시 탭 내부에 재시도 버튼과 함께 오류 메시지 표시
+    outputEl.innerHTML = `
+      <div style="color:var(--error);padding:12px;background:var(--error-bg);border-radius:8px;display:flex;flex-direction:column;gap:10px;">
+        <div>❌ <strong>오류 발생:</strong> ${err.message}</div>
+        <button class="btn-sm" style="width:fit-content;" onclick="retrySingleTab('${tabId}')">🔄 다시 시도</button>
+      </div>`;
     throw err;
   }
+}
+
+// ===== 단일 탭 재시도 =====
+async function retrySingleTab(tabId) {
+  const memo = $('memo').value.trim();
+  if (!memo) { showError('메모를 먼저 입력해 주세요.'); return; }
+  try {
+    await callClaudeStream(tabId, memo);
+  } catch {}
 }
 
 // ===== 마크다운 렌더링 =====
@@ -280,16 +310,19 @@ function renderMarkdown(el, text) {
 }
 
 // ===== Mermaid 다이어그램 렌더링 =====
+// AI 응답에서 ```mermaid 블록을 추출해 SVG로 렌더링하고,
+// 나머지 설명 텍스트는 마크다운으로 별도 표시한다.
 async function renderDiagram(el, text) {
-  // Mermaid 코드 블록 추출
+  // ```mermaid ... ``` 블록에서 코드만 추출
   const mermaidMatch = text.match(/```mermaid\n([\s\S]*?)```/);
   const mermaidCode = mermaidMatch ? mermaidMatch[1].trim() : null;
 
-  // 나머지 텍스트 (설명 부분)
+  // Mermaid 블록을 제거한 나머지가 설명 텍스트
   const descText = text.replace(/```mermaid[\s\S]*?```/, '').trim();
 
   let html = '';
-  const renderId = 'mermaid-' + Date.now();
+  // renderId는 두 if 블록 모두에서 참조하므로 바깥에 선언 (블록 스코프 주의)
+  const renderId = 'mermaid-' + Date.now(); // 동일 페이지 내 고유 ID 보장
 
   if (descText) {
     html += `<div class="output-body">${marked.parse(descText)}</div>`;
@@ -329,41 +362,45 @@ function escapeHtml(str) {
 async function generate() {
   const memo = $('memo').value.trim();
   if (!memo) { showError('메모를 입력해 주세요.'); return; }
+  if (memo.length < 10) { showError('메모가 너무 짧아요. 내용을 좀 더 입력해 주세요.'); return; }
 
   const key = $('api-key').value.trim();
-  if (!key) { showError('OpenRouter API 키를 입력하고 저장해 주세요.'); return; }
+  if (!key) { showError('OpenRouter API 키를 먼저 입력하고 저장해 주세요. (sk-or-로 시작)'); return; }
+  if (!key.startsWith('sk-or-')) { showError('올바른 OpenRouter API 키가 아닙니다. (sk-or-로 시작해야 합니다)'); return; }
   state.apiKey = key;
 
   hideError();
   state.loading = true;
   $('btn-generate').disabled = true;
-  $('btn-generate').innerHTML = '<div class="spinner"></div> 생성 중...';
 
-  // 모든 탭 동시에 로딩 표시
   const tabIds = ['summary', 'concepts', 'document', 'diagram', 'steps', 'design'];
+
+  // 모든 탭 대기 상태로 초기화
   tabIds.forEach(id => {
     $(`pane-${id}`).innerHTML = `
       <div class="output-body" style="display:flex;align-items:center;gap:12px;color:var(--text-2);">
-        <div class="spinner" style="border-color:var(--border);border-top-color:var(--primary);"></div>
-        <span>생성 중...</span>
+        <span style="font-size:1.1rem;">⏳</span>
+        <span>${getTabLabel(id)} 대기 중...</span>
       </div>`;
   });
 
-  // 첫 번째 탭으로 이동
   switchTab('summary');
 
   // 탭 순차 생성 (무료 모델 rate limit 대응)
   const delay = ms => new Promise(r => setTimeout(r, ms));
   let hasError = false;
-  for (const id of tabIds) {
+  for (let i = 0; i < tabIds.length; i++) {
+    const id = tabIds[i];
+    $('btn-generate').innerHTML = `<div class="spinner"></div> 생성 중... (${i + 1}/${tabIds.length})`;
     try {
       await callClaudeStream(id, memo);
-      await delay(3000);
-    } catch (err) {
+      if (i < tabIds.length - 1) await delay(3000);
+    } catch {
       hasError = true;
     }
   }
-  if (hasError) showError('일부 탭 생성 중 오류가 발생했습니다. 위의 탭에서 오류 내용을 확인해 주세요.');
+
+  if (hasError) showError('일부 탭에서 오류가 발생했습니다. 해당 탭의 🔄 다시 시도 버튼을 눌러주세요.');
 
   state.loading = false;
   $('btn-generate').disabled = false;
