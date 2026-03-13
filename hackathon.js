@@ -166,9 +166,12 @@ function switchTab(tabId) {
 }
 
 // ===== 문자 수 카운터 =====
+// 8,000자 초과 시 경고(주황), 9,500자 초과 시 위험(빨강) 색상으로 표시
 function updateCharCount() {
   const len = $('memo').value.length;
-  $('char-count').textContent = `${len.toLocaleString()} / 10,000자`;
+  const el = $('char-count');
+  el.textContent = `${len.toLocaleString()} / 10,000자`;
+  el.style.color = len > 9500 ? 'var(--error)' : len > 8000 ? '#f59e0b' : 'var(--text-2)';
 }
 
 // ===== 에러 =====
@@ -196,7 +199,10 @@ async function callClaudeStream(tabId, memo) {
   pane.innerHTML = `
     <div class="output-header">
       <span class="output-label">${getTabLabel(tabId)}</span>
-      <button class="btn-icon" onclick="exportMarkdown('${tabId}')">⬇ 내보내기</button>
+      <div style="display:flex;gap:6px;">
+        <button class="btn-icon" onclick="copyToClipboard('${tabId}')">📋 복사</button>
+        <button class="btn-icon" onclick="exportMarkdown('${tabId}')">⬇ 내보내기</button>
+      </div>
     </div>
     <div class="output-body" id="output-${tabId}">
       <span class="cursor"></span>
@@ -426,6 +432,21 @@ function exportMarkdown(tabId) {
   const a = document.createElement('a');
   a.href = url; a.download = filename; a.click();
   URL.revokeObjectURL(url);
+}
+
+// ===== 클립보드 복사 =====
+async function copyToClipboard(tabId) {
+  const content = state.results[tabId];
+  if (!content) { alert('아직 생성된 내용이 없습니다.'); return; }
+  try {
+    await navigator.clipboard.writeText(content);
+    const btn = document.querySelector(`#pane-${tabId} .btn-icon`);
+    const original = btn.textContent;
+    btn.textContent = '✅ 복사됨';
+    setTimeout(() => { btn.textContent = original; }, 1500);
+  } catch {
+    alert('복사에 실패했습니다. 직접 선택 후 복사해 주세요.');
+  }
 }
 
 function exportAll() {
