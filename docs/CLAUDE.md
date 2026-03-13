@@ -45,10 +45,22 @@ Claude Code가 이 프로젝트를 작업할 때 참고하는 지침.
 
 - **파일:** `hackathon.html`, `hackathon.css`, `hackathon.js`
 - **API:** OpenRouter (`https://openrouter.ai/api/v1/chat/completions`)
-- **모델:** `google/gemini-2.0-flash-exp:free`
+- **모델:** `stepfun/step-3.5-flash:free` (교체 시 `OPENROUTER_MODEL` 상수만 변경)
 - **스트리밍:** `stream: true`, `choices[0].delta.content` 파싱
 - **렌더링:** marked.js (마크다운), mermaid.js (다이어그램) — CDN만 사용
 - **저장:** API 키는 `localStorage`만 사용, 외부 전송 없음
+
+---
+
+## 무료 모델 한계 및 대응
+
+| 한계 | 내용 | 대응 |
+|---|---|---|
+| Rate Limit | 분당 요청 수 제한 | 탭 간 3초 딜레이 + 순차 처리 |
+| 응답 속도 | 전체 생성 2~3분 소요 | 진행률 표시로 UX 보완 |
+| 지시 준수율 | 소형 모델의 낮은 instruction-following | 유형 선택 UI로 프롬프트 강제 분기 |
+| 가용성 | 모델이 일시적으로 비활성화될 수 있음 | `OPENROUTER_MODEL` 상수로 즉시 교체 가능 |
+| Mermaid 품질 | 복잡한 다이어그램 생성 어려움 | 5노드 이하 단순 flowchart로 제한 |
 
 ---
 
